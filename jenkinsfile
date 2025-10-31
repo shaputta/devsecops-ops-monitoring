@@ -53,7 +53,6 @@ pipeline {
                 checkout scm
             }
         }
-
         stage('Policy-as-Code Check (OPA/Conftest)') {
     parallel {
         stage('Dockerfile Policy Check') {
@@ -69,11 +68,19 @@ pipeline {
                 fi
 
                 echo "🔎 Running Dockerfile policy checks..."
+
+                # Don't exit immediately on error, capture exit code
                 set +e
-                conftest test ${WORKSPACE}/Dockerfile --parser dockerfile -p ${WORKSPACE}/policy/docker > docker_policy_result.txt 2>&1
-                docker_exit=$?
+                conftest test ${WORKSPACE}/Dockerfile \
+                    --parser dockerfile \
+                    -p ${WORKSPACE}/policy/docker | tee docker_policy_result.txt
+                docker_exit=${PIPESTATUS[0]}
                 set -e
+
                 echo "Dockerfile Conftest Exit Code: $docker_exit"
+                echo "--- Dockerfile Policy Findings ---"
+                cat docker_policy_result.txt
+
                 exit $docker_exit
                 '''
             }
@@ -91,19 +98,27 @@ pipeline {
                 fi
 
                 echo "🔎 Running Terraform policy checks..."
+
+                # Don't exit immediately on error, capture exit code
                 set +e
-                conftest verify -p ${WORKSPACE}/policy/terraform/ > terraform_verify.txt 2>&1
-                conftest test ${WORKSPACE}/terraform/ --parser hcl2 -p ${WORKSPACE}/policy/terraform/ > terraform_policy_result.txt 2>&1
-                terraform_exit=$?
+                conftest verify -p ${WORKSPACE}/policy/terraform/ | tee terraform_verify.txt
+                conftest test ${WORKSPACE}/terraform/ \
+                    --parser hcl2 \
+                    -p ${WORKSPACE}/policy/terraform/ | tee terraform_policy_result.txt
+                terraform_exit=${PIPESTATUS[0]}
                 set -e
+
                 echo "Terraform Conftest Exit Code: $terraform_exit"
+                echo "--- Terraform Policy Findings ---"
+                cat terraform_verify.txt
+                cat terraform_policy_result.txt
+
                 exit $terraform_exit
                 '''
             }
         }
         }
     }
-
         stage('Build and Push Image') {
             when { expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' } }
             steps {
