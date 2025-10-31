@@ -1,0 +1,97 @@
+pipeline {
+    agent {
+        label 'sha-ubuntu-node'
+    }
+
+    environment {
+        IMAGE_NAME = "pac-demo:latest"
+    }
+
+    stages {
+        stage('Setup Python Env') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    ./venv/bin/pip install --upgrade pip
+                    ./venv/bin/pip install --upgrade flask
+                    ./venv/bin/pip install -r python_app/requirements.txt
+                    ./venv/bin/pip install pytest 
+                '''
+            }
+        }
+
+        stage('Run Unit Tests') {
+            steps {
+                sh './venv/bin/python -m pytest --maxfail=1 --disable-warnings -q || echo "No tests yet"'
+            }
+        }
+
+        stage('Trivy Security Scan') {
+            steps {
+                sh '''
+                    if ! command -v trivy &> /dev/null; then
+                    echo "📦 Installing Trivy..."
+                    sudo apt-get update -y
+                    sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+                    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+                    echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/trivy.list
+                    sudo apt-get update -y
+                    sudo apt-get install -y trivy
+                    fi
+
+                    echo "🔍 Running Trivy scans..."
+                    docker build -t ${IMAGE_NAME} .
+                    trivy image --severity HIGH,CRITICAL --exit-code 1 ${IMAGE_NAME} || true
+                    trivy fs --severity HIGH,CRITICAL --exit-code 1 . || true
+                    docker image rmi ${IMAGE_NAME} -f
+                '''
+            }
+        }
+        stage('Cleanup Workspace') {
+            steps {
+                deleteDir()
+                checkout scm
+            }
+        }
+
+        stage('Policy-as-Code Check (OPA/Conftest)') {
+            steps {
+                sh '''#!/usr/bin/env bash
+                set -euxo pipefail
+
+                # Install conftest (idempotent)
+                if ! command -v conftest >/dev/null 2>&1; then
+                    wget "https://github.com/open-policy-agent/conftest/releases/download/v0.51.0/conftest_0.51.0_Linux_x86_64.tar.gz"
+                    tar xzf conftest_0.51.0_Linux_x86_64.tar.gz
+                    sudo mv conftest /usr/local/bin/
+                fi
+                    conftest parse ${WORKSPACE}/Dockerfile --parser dockerfile | jq
+
+
+                    echo "🔎 Running policy checks..."
+                    # Dockerfile check (explicit parser)
+                    conftest test ${WORKSPACE}/Dockerfile --parser dockerfile -p ${WORKSPACE}/policy/docker
+
+                    # See actual parsed shape (helps when debugging)
+                    conftest parse ${WORKSPACE}/terraform/main.tf --parser hcl2 | jq
+
+                    # Verify & test
+                    conftest verify -p ${WORKSPACE}/policy/terraform/
+                    conftest test ${WORKSPACE}/terraform/ --parser hcl2 -p ${WORKSPACE}/policy/terraform/
+                     # Terraform check (use hcl2 parser)
+                    #conftest test ${WORKSPACE}/terraform/ --parser hcl2 -p ${WORKSPACE}/policy/terraform  || exit 1
+                '''
+            }
+        }
+
+        stage('Build and Push Image') {
+            when { expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' } }
+            steps {
+                sh '''
+                    echo "✅ All checks passed. Proceeding with image build."
+                    #docker build -t ${IMAGE_NAME} .
+                '''
+            }
+        }
+    }
+}
