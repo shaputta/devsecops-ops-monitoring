@@ -54,53 +54,36 @@ pipeline {
             }
         }
 
-    stage('Policy-as-Code Check (OPA/Conftest)') {
-        parallel {
-        stage('Dockerfile Policy Check') {
+        stage('Policy-as-Code Check (OPA/Conftest)') {
             steps {
                 sh '''#!/usr/bin/env bash
                 set -euxo pipefail
 
                 # Install conftest (idempotent)
                 if ! command -v conftest >/dev/null 2>&1; then
-                    wget -q "https://github.com/open-policy-agent/conftest/releases/download/v0.51.0/conftest_0.51.0_Linux_x86_64.tar.gz"
+                    wget "https://github.com/open-policy-agent/conftest/releases/download/v0.51.0/conftest_0.51.0_Linux_x86_64.tar.gz"
                     tar xzf conftest_0.51.0_Linux_x86_64.tar.gz
                     sudo mv conftest /usr/local/bin/
                 fi
+                    conftest parse ${WORKSPACE}/Dockerfile --parser dockerfile | jq
 
-                echo "🔎 Parsing Dockerfile..."
-                conftest parse ${WORKSPACE}/Dockerfile --parser dockerfile | jq
 
-                echo "✅ Running Dockerfile policy checks..."
-                # Run all Dockerfile policy tests
-                conftest test ${WORKSPACE}/Dockerfile --parser dockerfile -p ${WORKSPACE}/policy/docker || true
+                    echo "🔎 Running policy checks..."
+                    # Dockerfile check (explicit parser)
+                    conftest test ${WORKSPACE}/Dockerfile --parser dockerfile -p ${WORKSPACE}/policy/docker
+
+                    # See actual parsed shape (helps when debugging)
+                    conftest parse ${WORKSPACE}/terraform/main.tf --parser hcl2 | jq
+
+                    # Verify & test
+                    conftest verify -p ${WORKSPACE}/policy/terraform/
+                    conftest test ${WORKSPACE}/terraform/ --parser hcl2 -p ${WORKSPACE}/policy/terraform/
+                     # Terraform check (use hcl2 parser)
+                    #conftest test ${WORKSPACE}/terraform/ --parser hcl2 -p ${WORKSPACE}/policy/terraform  || exit 1
                 '''
             }
         }
 
-        stage('Terraform Policy Check') {
-            steps {
-                sh '''#!/usr/bin/env bash
-                set -euxo pipefail
-
-                # Install conftest (idempotent)
-                if ! command -v conftest >/dev/null 2>&1; then
-                    wget -q "https://github.com/open-policy-agent/conftest/releases/download/v0.51.0/conftest_0.51.0_Linux_x86_64.tar.gz"
-                    tar xzf conftest_0.51.0_Linux_x86_64.tar.gz
-                    sudo mv conftest /usr/local/bin/
-                fi
-
-                echo "🔎 Parsing Terraform files..."
-                conftest parse ${WORKSPACE}/terraform/main.tf --parser hcl2 | jq
-
-                echo "✅ Running Terraform policy checks..."
-                conftest verify -p ${WORKSPACE}/policy/terraform/ || true
-                conftest test ${WORKSPACE}/terraform/ --parser hcl2 -p ${WORKSPACE}/policy/terraform/ || true
-                '''
-            }
-        }
-    }
-    }
         stage('Build and Push Image') {
             when { expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' } }
             steps {
